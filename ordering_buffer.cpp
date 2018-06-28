@@ -1,6 +1,5 @@
 #include <iostream>
 #include <vector>
-#include <pair>
 #include <mutex>
 #include <condition_variable>
 #include <utility>
@@ -12,14 +11,14 @@
 using namespace std;
 
 class Block {
-	int number;
+	int number_;
 	public:
 
-	Block(int n): number(n) {
+	Block(int n): number_(n) {
 	}
 
 	int number() {
-		return number;
+		return number_;
 	}
 };
 
@@ -44,8 +43,8 @@ class BlocksBuffer {
 	
 	// constructor with initialization list
 	BlocksBuffer(unsigned int bsize): buffer_size(bsize), 
-			buffer(buffer_size, make_pair(Block(), -1)),  // init the buffer with the default block and epoch -1
-			current_blocknum(0), {
+			buffer(buffer_size, make_pair(Block(0), -1)),  // init the buffer with the default block and epoch -1
+			current_blocknum(0) {
 	}
 
 	void  AddBlock(Block b);
@@ -53,7 +52,7 @@ class BlocksBuffer {
 	Block GetCurrentBlock();
 
 	void  SetCurrentBlocknum(int blocknum);
-}
+};
 
 /* 
  * BlocksBuffer::AddBlock 
@@ -99,31 +98,33 @@ void BlocksBuffer::AddBlock(Block b) {
  */
 Block BlocksBuffer::GetCurrentBlock() {
 	// Acquire the current_blocknum_mutex to prevent SetCurrentBlocknum from changing the same
-	lock_guard< mutex > lck(current_blocknum_mutex);
+	cout << "expected blocknum: " << current_blocknum << endl << flush;
+	lock_guard< mutex > blocknum_lck(current_blocknum_mutex);
 	int epoch = current_blocknum / buffer_size;
 	int index = current_blocknum % buffer_size;
 
 	// Acquire the current_slot_mutex to prevent AddBlock from modifying the same
-	lock_guard<mutex> lck(current_slot_mutex);
+	unique_lock<mutex> slot_lck(current_slot_mutex);
 	// check if the current slot holds the current block by means of the epoch
 	if(buffer[index].second == epoch) {
+		current_blocknum++;
 		return buffer[index].first;
 	} else {
 		// this releases the current_slot_mutex for AddBlock to access the slot
-		current_slot_cv.wait(current_slot_mutex);
+		current_slot_cv.wait(slot_lck);
+		current_blocknum++;
 		return buffer[index].first;
 	}
-	current_blocknum++;
 }
 
 /* 
- * BlocksBuffer::GetCurrentBlocknum
+ * BlocksBuffer::SetCurrentBlocknum
  * 	- update the current_blocknum
  * It is called by the consumer to tell the buffer the block it wants from the buffer.
  * Since this could cause a race condition in the access of current_blocknum, we protect the same 
  * 	using the current_blocknum_mutex
  */
-void BlocksBuffer::GetCurrentBlocknum(int blocknum) {
+void BlocksBuffer::SetCurrentBlocknum(int blocknum) {
 	lock_guard< mutex > lck(current_blocknum_mutex);
 	current_blocknum = blocknum;
 }
@@ -132,18 +133,19 @@ BlocksBuffer buffer(BLOCKS_BUFFER_SIZE);
 
 void add_random_blocks() {
 	int n;
+	srand(time(NULL));
 	while(true) {
 		n = rand()%BLOCKS_BUFFER_SIZE;
-		cout << n << " ";
+		cout << n << " " << flush;
 		buffer.AddBlock(n);
-		this_thread::sleep_for(chrono::miliseconds(100));
+		this_thread::sleep_for(chrono::milliseconds(100));
 	}
 }
 
 int main() {
 	Block b(-1);
 	thread t(add_random_blocks);
-	while(b.number() != BLOCKS_BUFFER_SIZE) {
+	while(b.number() != BLOCKS_BUFFER_SIZE - 1) {
 		b = buffer.GetCurrentBlock();
 		cout << "\nOut: " << b.number() << endl;
 	}
